@@ -1,0 +1,73 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:14-alpine
+    container_name: stroer-db
+    restart: always
+    env_file:
+      - .test.env
+    command: -p 5455
+    healthcheck:
+      test: [ "CMD-SHELL", "sh -c 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}'" ]
+      interval: 3s
+      timeout: 1s
+      retries: 10
+
+  redis:
+    container_name: stroer-redis
+    image: redis:6.2-alpine
+    command: >
+      --requirepass ${REDIS_PASSWORD}
+    env_file:
+      - .test.env
+
+  app:
+    container_name: stroer-app
+    build:
+      context: .
+      dockerfile: ./docker/test/Dockerfile
+    volumes:
+      - ./src:/app/src
+    healthcheck:
+      test: [ "CMD", "python", "manage.py", "wait_for_migrations" ]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+    env_file:
+      - .test.env
+    depends_on:
+      - redis
+      - db
+
+  celery_worker:
+    container_name: stroer-celery-worker
+    build:
+      context: .
+      dockerfile: ./docker/test/Dockerfile
+    volumes:
+      - ./src:/app/src
+    command: celery -A stroer.celery_conf.celery worker --loglevel=info
+    depends_on:
+      - app
+      - redis
+    env_file:
+      - .test.env
+
+  celery_beat:
+    container_name: stroer-celery-beat
+    build:
+      context: .
+      dockerfile: ./docker/test/Dockerfile
+    volumes:
+      - ./src:/app/src
+    command: celery -A stroer.celery_conf.celery beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    depends_on:
+      redis:
+        condition: service_started
+      celery_worker:
+        condition: service_started
+      app:
+        condition: service_healthy
+    env_file:
+      - .test.env
